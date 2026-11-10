@@ -1,0 +1,150 @@
+/*
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+buildscript {
+    repositories {
+        maven {
+            url 'https://plugins.gradle.org/m2/'
+        }
+    }
+    dependencies {
+        classpath 'com.adarshr:gradle-test-logger-plugin:3.2.0'
+        classpath 'gradle.plugin.com.github.johnrengelman:shadow:7.1.2'
+        classpath 'com.diffplug.spotless:spotless-plugin-gradle:6.25.0'
+    }
+}
+
+allprojects {
+    repositories {
+        mavenLocal()
+        mavenCentral()
+    }
+}
+
+subprojects {
+    apply plugin: 'jacoco'
+    apply plugin: 'java'
+    apply plugin: 'com.adarshr.test-logger'
+    apply plugin: 'com.github.johnrengelman.shadow'
+    apply plugin: "com.diffplug.spotless"
+    apply plugin: "pmd"
+
+    project(':api') {
+        apply plugin: 'application'
+        archivesBaseName = 'marquez-api'
+    }
+
+    project(':clients:java') {
+        apply plugin: 'java-library'
+        archivesBaseName = 'marquez-java'
+    }
+
+    ext {
+        assertjVersion = '3.26.3'
+        dropwizardVersion = '2.1.12'
+        jacocoVersion = '0.8.12'
+        junit5Version = '5.10.2'
+        lombokVersion = '1.18.34'
+        mockitoVersion = '5.4.0'
+        openlineageVersion = '1.23.0'
+        slf4jVersion = '1.7.36'
+        postgresqlVersion = '42.7.4'
+    }
+
+    dependencies {
+        implementation "org.projectlombok:lombok:${lombokVersion}"
+        annotationProcessor "org.projectlombok:lombok:${lombokVersion}"
+
+        testImplementation "org.assertj:assertj-core:${assertjVersion}"
+        testImplementation "org.junit.jupiter:junit-jupiter:${junit5Version}"
+        testImplementation "org.mockito:mockito-core:${mockitoVersion}"
+        testImplementation "org.mockito:mockito-junit-jupiter:${mockitoVersion}"
+        testImplementation "org.projectlombok:lombok:${lombokVersion}"
+        testAnnotationProcessor "org.projectlombok:lombok:${lombokVersion}"
+    }
+
+    compileJava {
+        options.incremental = true
+        options.compilerArgs << '-parameters'
+        options.encoding = "UTF-8"
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    compileTestJava {
+        options.incremental = true
+        options.compilerArgs << '-parameters'
+        options.encoding = "UTF-8"
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    task sourceJar(type: Jar, dependsOn: classes) {
+        from sourceSets.main.allJava
+        archiveClassifier.set("sources")
+    }
+
+    task javadocJar(type: Jar) {
+        from javadoc.destinationDir
+        archiveClassifier.set("javadoc")
+    }
+
+    pmd {
+        consoleOutput = true
+        toolVersion = "6.55.0"
+        rulesMinimumPriority = 5
+        ruleSetFiles = rootProject.files("pmd-marquez.xml")
+        ruleSets = []
+        ignoreFailures = true
+    }
+
+    pmdMain {
+        reports {
+            html.required = true
+        }
+    }
+
+    spotless {
+        def disallowWildcardImports = {
+            String text = it
+            def regex = ~/import .*\.\*;/
+            def m = regex.matcher(text)
+            if (m.find()) {
+                throw new AssertionError("Wildcard imports disallowed - ${m.findAll()}")
+            }
+        }
+        java {
+            googleJavaFormat()
+            removeUnusedImports()
+            endWithNewline()
+            custom 'disallowWildcardImports', disallowWildcardImports
+        }
+    }
+
+    def reportsDir = "${buildDir}/reports";
+    def coverageDir = "${reportsDir}/coverage";
+
+    jacoco {
+        toolVersion = "${jacocoVersion}"
+        reportsDir = file(coverageDir)
+    }
+
+    jacocoTestReport {
+        reports {
+            xml.required = true
+            html.required = true
+            html.outputLocation = file(coverageDir)
+        }
+    }
+}

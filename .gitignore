@@ -1,0 +1,44 @@
+**/*.python-version
+*.egg-info
+*.iml
+*.swp
+./**/*.class
+./out/*
+.actrc
+.DS_Store
+.classpath
+.editorconfig
+.env
+.gradle/
+.idea/
+.project
+.pytest_cache
+.settings
+.vscode/
+__pycache__
+api/out/
+bin/
+build/
+clients/java/out/
+dist/
+examples/airflow/dags/
+examples/airflow/openlineage.env
+examples/airflow/requirements.txt
+examples/airflow/whl
+out/*
+venv
+
+# Marquez configuration
+marquez.yml
+
+# Metadata
+metadata.json
+
+# jenv
+.java-version
+
+# Dependent Helm charts
+chart/charts/
+
+# Dev
+changes.txt
