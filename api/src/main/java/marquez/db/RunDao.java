@@ -38,6 +38,7 @@ import marquez.service.models.LineageEvent.SchemaField;
 import marquez.service.models.Run;
 import marquez.service.models.RunMeta;
 import org.jdbi.v3.sqlobject.config.RegisterRowMapper;
+import org.jdbi.v3.sqlobject.customizer.BindList;
 import org.jdbi.v3.sqlobject.statement.SqlQuery;
 import org.jdbi.v3.sqlobject.statement.SqlUpdate;
 import org.jdbi.v3.sqlobject.transaction.Transaction;
@@ -138,7 +139,11 @@ public interface RunDao extends BaseDao {
 """)
   Optional<JobRow> findJobRowByRunUuid(UUID uuid);
 
-  @SqlQuery(
+  /**
+   * Base query (CTEs, SELECT, and JOINs) shared by all "list runs for job" queries. It has no
+   * WHERE clause on the outer SELECT intentionally so that filters can be appended below.
+   */
+  String FIND_RUNS_FOR_JOB_BASE_SQL =
       """
           WITH filtered_jobs AS (
             SELECT
@@ -217,10 +222,105 @@ public interface RunDao extends BaseDao {
           LEFT JOIN input_versions_agg ri ON r.uuid = ri.run_uuid
           LEFT JOIN output_versions_agg ro ON r.uuid = ro.run_uuid
           LEFT JOIN dataset_facets_agg df ON r.uuid = df.run_uuid
+      """;
+
+  /**
+   * Optional run filters applied on top of the runs of a job. When {@code noStateFilter} is true,
+   * the run state condition is disabled; a null {@code startedAfter} / {@code startedBefore}
+   * disables the respective time boundary. The conditions reference alias {@code r} (runs_view).
+   */
+  String RUN_FILTER_CONDITIONS =
+      """
+      (:noStateFilter OR r.current_run_state IN (<runStates>))
+        AND (:startedAfter IS NULL OR r.started_at >= :startedAfter)
+        AND (:startedBefore IS NULL OR r.started_at <= :startedBefore)
+      """;
+
+  @SqlQuery(
+      FIND_RUNS_FOR_JOB_BASE_SQL
+          + """
           ORDER BY r.started_at DESC NULLS LAST
           LIMIT :limit OFFSET :offset
       """)
   List<Run> findAll(String namespace, String jobName, int limit, int offset);
+
+  @SqlQuery(
+      FIND_RUNS_FOR_JOB_BASE_SQL
+          + "WHERE "
+          + RUN_FILTER_CONDITIONS
+          + """
+          ORDER BY r.started_at DESC NULLS LAST
+          LIMIT :limit OFFSET :offset
+      """)
+  List<Run> findAllFiltered(
+      String namespace,
+      String jobName,
+      @BindList(value = "runStates", onEmpty = BindList.EmptyHandling.VOID)
+          List<RunState> runStates,
+      boolean noStateFilter,
+      Instant startedAfter,
+      Instant startedBefore,
+      int limit,
+      int offset);
+
+  /**
+   * Returns the runs of a job filtered by run states and/or the time at which the runs started. An
+   * empty {@code runStates} list disables the state filter; a null {@code startedAfter} / {@code
+   * startedBefore} disables the respective time boundary.
+   */
+  default List<Run> findAll(
+      String namespace,
+      String jobName,
+      List<RunState> runStates,
+      Instant startedAfter,
+      Instant startedBefore,
+      int limit,
+      int offset) {
+    final List<RunState> states = (runStates == null) ? List.of() : runStates;
+    return findAllFiltered(
+        namespace,
+        jobName,
+        states,
+        states.isEmpty(),
+        startedAfter,
+        startedBefore,
+        limit,
+        offset);
+  }
+
+  @SqlQuery(
+      """
+          SELECT count(r.uuid)
+          FROM runs_view r
+          INNER JOIN jobs_view jv ON r.job_uuid = jv.uuid
+          WHERE jv.namespace_name = :namespace
+            AND (jv.name = :jobName OR :jobName = ANY(jv.aliases))
+            AND
+      """
+          + RUN_FILTER_CONDITIONS)
+  int countRunsFiltered(
+      String namespace,
+      String jobName,
+      @BindList(value = "runStates", onEmpty = BindList.EmptyHandling.VOID)
+          List<RunState> runStates,
+      boolean noStateFilter,
+      Instant startedAfter,
+      Instant startedBefore);
+
+  /**
+   * Counts the runs of a job matching the same filters as {@link #findAll(String, String, List,
+   * Instant, Instant, int, int)} so that both stay consistent with each other.
+   */
+  default int countRuns(
+      String namespace,
+      String jobName,
+      List<RunState> runStates,
+      Instant startedAfter,
+      Instant startedBefore) {
+    final List<RunState> states = (runStates == null) ? List.of() : runStates;
+    return countRunsFiltered(
+        namespace, jobName, states, states.isEmpty(), startedAfter, startedBefore);
+  }
 
   @SqlQuery(
       "INSERT INTO runs ( "

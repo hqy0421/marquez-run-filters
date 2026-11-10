@@ -14,11 +14,17 @@ import static marquez.common.models.CommonModelGenerator.newJobName;
 import static marquez.common.models.CommonModelGenerator.newSchemaLocation;
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
+import java.net.URI;
 import java.net.URL;
+import java.net.URLEncoder;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.sql.SQLException;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -26,6 +32,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import marquez.client.Utils;
 import marquez.client.models.Dataset;
 import marquez.client.models.DatasetId;
 import marquez.client.models.DbTable;
@@ -598,6 +605,114 @@ public class MarquezAppIntegrationTest extends BaseIntegrationTest {
     assertThat(runs.get(0).getId()).isEqualTo(run2.getId());
     assertThat(runs.get(1).getId()).isEqualTo(run1.getId());
     assertThat(runs.get(2).getId()).isEqualTo(run0.getId());
+  }
+
+  @Test
+  public void testApp_listRunsWithFilters() throws Exception {
+    // Create namespace for runs
+    final NamespaceMeta namespaceMeta =
+        NamespaceMeta.builder().ownerName(OWNER_NAME).description(NAMESPACE_DESCRIPTION).build();
+
+    client.createNamespace(NAMESPACE_NAME, namespaceMeta);
+
+    // Create job
+    String jobName = newJobName().getValue();
+    final JobMeta jobMeta =
+        JobMeta.builder()
+            .type(JOB_TYPE)
+            .inputs(ImmutableSet.of())
+            .outputs(ImmutableSet.of())
+            .location(JOB_LOCATION)
+            .description(JOB_DESCRIPTION)
+            .build();
+    client.createJob(NAMESPACE_NAME, jobName, jobMeta);
+
+    // Create runs in different states
+    final RunMeta runMeta = RunMeta.builder().build();
+    final Run completedRun = client.createRunAndStart(NAMESPACE_NAME, jobName, runMeta);
+    client.markRunAsCompleted(completedRun.getId());
+    final Run failedRun = client.createRunAndStart(NAMESPACE_NAME, jobName, runMeta);
+    client.markRunAsFailed(failedRun.getId());
+    client.createRunAndStart(NAMESPACE_NAME, jobName, runMeta);
+
+    // (1) no filters: backwards compatible behavior, all runs are returned
+    JsonNode unfiltered = getRuns(NAMESPACE_NAME, jobName, "");
+    assertThat(unfiltered.get("runs").size()).isEqualTo(3);
+    assertThat(unfiltered.get("totalCount").asInt()).isEqualTo(3);
+
+    // (2) filter by a single run state
+    JsonNode failed = getRuns(NAMESPACE_NAME, jobName, "?runStates=FAILED");
+    assertThat(failed.get("runs").size()).isEqualTo(1);
+    assertThat(failed.get("runs").get(0).get("id").asText()).isEqualTo(failedRun.getId());
+    assertThat(failed.get("totalCount").asInt()).isEqualTo(1);
+
+    // (3) filter by multiple run states, comma-separated or repeated
+    JsonNode done = getRuns(NAMESPACE_NAME, jobName, "?runStates=FAILED,COMPLETED");
+    assertThat(done.get("runs").size()).isEqualTo(2);
+    assertThat(done.get("totalCount").asInt()).isEqualTo(2);
+    JsonNode doneRepeated =
+        getRuns(NAMESPACE_NAME, jobName, "?runStates=FAILED&runStates=COMPLETED");
+    assertThat(doneRepeated.get("runs").size()).isEqualTo(2);
+    assertThat(doneRepeated.get("totalCount").asInt()).isEqualTo(2);
+
+    // (4) time window: all runs started before now, none starts in the future
+    String now = URLEncoder.encode(Instant.now().toString(), StandardCharsets.UTF_8);
+    JsonNode startedBeforeNow = getRuns(NAMESPACE_NAME, jobName, "?startedBefore=" + now);
+    assertThat(startedBeforeNow.get("runs").size()).isEqualTo(3);
+    assertThat(startedBeforeNow.get("totalCount").asInt()).isEqualTo(3);
+
+    String inOneHour =
+        URLEncoder.encode(
+            Instant.now().plus(1, ChronoUnit.HOURS).toString(), StandardCharsets.UTF_8);
+    JsonNode startingInFuture = getRuns(NAMESPACE_NAME, jobName, "?startedAfter=" + inOneHour);
+    assertThat(startingInFuture.get("runs").size()).isEqualTo(0);
+    assertThat(startingInFuture.get("totalCount").asInt()).isEqualTo(0);
+
+    // (5) combined state and time window filters
+    JsonNode failedBeforeNow =
+        getRuns(NAMESPACE_NAME, jobName, "?runStates=FAILED&startedBefore=" + now);
+    assertThat(failedBeforeNow.get("runs").size()).isEqualTo(1);
+    assertThat(failedBeforeNow.get("totalCount").asInt()).isEqualTo(1);
+
+    // (6) invalid filters are rejected with a 400
+    assertThat(getRunsStatus(NAMESPACE_NAME, jobName, "?runStates=NOT_A_STATE")).isEqualTo(400);
+    assertThat(getRunsStatus(NAMESPACE_NAME, jobName, "?startedAfter=not-a-timestamp"))
+        .isEqualTo(400);
+    assertThat(getRunsStatus(NAMESPACE_NAME, jobName, "?startedBefore=2024-13-01")).isEqualTo(400);
+    assertThat(
+            getRunsStatus(
+                NAMESPACE_NAME,
+                jobName,
+                "?startedAfter=2024-02-01T00:00:00Z&startedBefore=2024-01-01T00:00:00Z"))
+        .isEqualTo(400);
+  }
+
+  private JsonNode getRuns(String namespace, String job, String query) throws Exception {
+    final HttpResponse<String> response = listRunsRequest(namespace, job, query);
+    assertThat(response.statusCode()).isEqualTo(200);
+    return Utils.getMapper().readTree(response.body());
+  }
+
+  private int getRunsStatus(String namespace, String job, String query) throws Exception {
+    return listRunsRequest(namespace, job, query).statusCode();
+  }
+
+  private HttpResponse<String> listRunsRequest(String namespace, String job, String query)
+      throws Exception {
+    final HttpRequest request =
+        HttpRequest.newBuilder()
+            .uri(
+                new URI(
+                    baseUrl
+                        + "/api/v1/namespaces/"
+                        + namespace
+                        + "/jobs/"
+                        + job
+                        + "/runs"
+                        + query))
+            .GET()
+            .build();
+    return http2.send(request, HttpResponse.BodyHandlers.ofString());
   }
 
   @Test

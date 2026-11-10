@@ -2,6 +2,10 @@
 
 ## [Unreleased](https://github.com/MarquezProject/marquez/compare/0.50.0...HEAD)
 
+### Added
+
+* API: Optional `runStates`, `startedAfter`, and `startedBefore` filters for `GET` `/api/v1/namespaces/{namespace}/jobs/{job}/runs`; `totalCount` now reflects the applied filters, and invalid run states or timestamps are rejected with a `400`
+
 ## [0.50.0](https://github.com/MarquezProject/marquez/compare/0.49.0...0.50.0) - 2024-10-23
 
 ### Added

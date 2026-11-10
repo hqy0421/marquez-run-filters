@@ -41,6 +41,7 @@ import marquez.api.exceptions.JobNotFoundException;
 import marquez.api.exceptions.JobVersionNotFoundException;
 import marquez.api.models.JobVersion;
 import marquez.api.models.ResultsPage;
+import marquez.api.models.RunsFilter;
 import marquez.common.models.FacetType;
 import marquez.common.models.JobName;
 import marquez.common.models.NamespaceName;
@@ -257,13 +258,38 @@ public class JobResource extends BaseResource {
       @PathParam("namespace") NamespaceName namespaceName,
       @PathParam("job") JobName jobName,
       @QueryParam("limit") @DefaultValue("100") @Min(value = 0) int limit,
-      @QueryParam("offset") @DefaultValue("0") @Min(value = 0) int offset) {
+      @QueryParam("offset") @DefaultValue("0") @Min(value = 0) int offset,
+      @QueryParam("runStates") List<String> runStates,
+      @QueryParam("startedAfter") String startedAfter,
+      @QueryParam("startedBefore") String startedBefore) {
     throwIfNotExists(namespaceName);
     throwIfNotExists(namespaceName, jobName);
 
+    final RunsFilter filter = RunsFilter.of(runStates, startedAfter, startedBefore);
+    if (filter.isEmpty()) {
+      // No filters provided: preserve the original behavior.
+      final List<Run> runs =
+          runService.findAll(namespaceName.getValue(), jobName.getValue(), limit, offset);
+      final int totalCount = jobService.countJobRuns(namespaceName.getValue(), jobName.getValue());
+      return Response.ok(new Runs(runs, totalCount)).build();
+    }
+
     final List<Run> runs =
-        runService.findAll(namespaceName.getValue(), jobName.getValue(), limit, offset);
-    final int totalCount = jobService.countJobRuns(namespaceName.getValue(), jobName.getValue());
+        runService.findAll(
+            namespaceName.getValue(),
+            jobName.getValue(),
+            filter.getRunStates(),
+            filter.getStartedAfter().orElse(null),
+            filter.getStartedBefore().orElse(null),
+            limit,
+            offset);
+    final int totalCount =
+        runService.countRuns(
+            namespaceName.getValue(),
+            jobName.getValue(),
+            filter.getRunStates(),
+            filter.getStartedAfter().orElse(null),
+            filter.getStartedBefore().orElse(null));
     return Response.ok(new Runs(runs, totalCount)).build();
   }
 

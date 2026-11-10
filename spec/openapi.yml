@@ -449,6 +449,41 @@ paths:
       parameters:
         - $ref: '#/components/parameters/limit'
         - $ref: '#/components/parameters/offset'
+        - name: runStates
+          in: query
+          description: |
+            Filter runs by their current state. Accepts repeated parameters
+            (`?runStates=FAILED&runStates=ABORTED`) or comma-separated values
+            (`?runStates=FAILED,ABORTED`). Matching is case-insensitive.
+            When omitted, runs in any state are returned.
+          required: false
+          schema:
+            type: array
+            items:
+              type: string
+              enum: [NEW, RUNNING, COMPLETED, ABORTED, FAILED, OTHER]
+          style: form
+          explode: true
+        - name: startedAfter
+          in: query
+          description: |
+            Only return runs that started at or after this
+            [ISO-8601](https://en.wikipedia.org/wiki/ISO_8601) timestamp
+            (e.g. `2024-01-01T00:00:00Z`).
+          required: false
+          schema:
+            type: string
+            format: date-time
+        - name: startedBefore
+          in: query
+          description: |
+            Only return runs that started at or before this
+            [ISO-8601](https://en.wikipedia.org/wiki/ISO_8601) timestamp
+            (e.g. `2024-01-02T00:00:00Z`).
+          required: false
+          schema:
+            type: string
+            format: date-time
       summary: List all runs
       description: Returns a list of runs for a job.
       tags:
@@ -460,6 +495,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/RunList'
+        '400':
+          description: |
+            Bad Request. Returned when a run state is not one of
+            `NEW, RUNNING, COMPLETED, ABORTED, FAILED, OTHER`, when a time
+            boundary is not a valid ISO-8601 timestamp, or when
+            `startedAfter` is later than `startedBefore`.
 
   /jobs/runs/{id}:
     parameters:
